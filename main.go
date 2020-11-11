@@ -11,6 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+	"crypto/tls"
+	"crypto/x509"
 
 	"github.com/meowgorithm/babyenv"
 	gap "github.com/muesli/go-app-paths"
@@ -23,6 +26,8 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glow/ui"
 	"github.com/charmbracelet/glow/utils"
+	"git.sr.ht/~adnano/go-gemini"
+	"git.sr.ht/~adnano/go-xdg"
 )
 
 var (
@@ -77,9 +82,40 @@ func sourceFromArg(arg string) (*source, error) {
 		return src, nil
 	}
 
-	// HTTP(S) URLs:
+	// URLs:
 	if u, err := url.ParseRequestURI(arg); err == nil && strings.Contains(arg, "://") {
 		if u.Scheme != "" {
+			if u.Scheme == "gemini" {
+				var client = &gemini.Client{}
+				client.Timeout = 30 * time.Second
+				client.KnownHosts.Load(filepath.Join(xdg.DataHome(), "gemini", "known_hosts"))
+				client.TrustCertificate = func(hostname string, cert *x509.Certificate) gemini.Trust {
+					// Automatically trust the host to avoid different behaviour between gemini and HTTP(s)
+					return gemini.TrustOnce
+				}
+
+				client.CreateCertificate = func(hostname, path string) (tls.Certificate, error) {
+					fmt.Println("Generating client certificate for", hostname, path)
+					return gemini.CreateCertificate(gemini.CertificateOptions{
+						Duration: time.Hour,
+					})
+				}
+
+				req, err := gemini.NewRequest(arg)
+				if err != nil {
+					return nil, err
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					return nil, err
+				}
+				if resp.Status.Class() != gemini.StatusClassSuccess {
+					return nil, fmt.Errorf("Can't retrieve document, Gemini status %d", resp.Status)
+				}
+
+				return &source{resp.Body, u.String()}, nil
+			}
+
 			if u.Scheme != "http" && u.Scheme != "https" {
 				return nil, fmt.Errorf("%s is not a supported protocol", u.Scheme)
 			}
